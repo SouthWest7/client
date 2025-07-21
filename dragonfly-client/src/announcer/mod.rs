@@ -25,9 +25,11 @@ use dragonfly_client_config::{
 };
 use dragonfly_client_core::error::{ErrorType, OrErr};
 use dragonfly_client_core::Result;
+use dragonfly_client_util::net::get_interface_info;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
+use sysinfo::Networks;
 use sysinfo::System;
 use tokio::sync::mpsc;
 use tracing::{error, info, instrument};
@@ -228,6 +230,19 @@ impl SchedulerAnnouncer {
             free: sys.free_memory(),
         };
 
+        let interface =
+            get_interface_info(self.config.host.ip.unwrap(), self.config.upload.rate_limit)
+                .unwrap();
+        let networks = Networks::new_with_refreshed_list();
+        let mut download_rate = 0;
+        let mut upload_rate = 0;
+        if let Some(network_data) = networks.get(&interface.name) {
+            download_rate =
+                (network_data.received() as f64 / interval.as_secs_f64().round()) as u64;
+            upload_rate =
+                (network_data.transmitted() as f64 / interval.as_secs_f64().round()) as u64;
+        }
+
         // Get the network information.
         let network = Network {
             // TODO: Get the count of the tcp connection.
@@ -240,12 +255,12 @@ impl SchedulerAnnouncer {
 
             // TODO: Get the network download rate, refer to
             // https://docs.rs/sysinfo/latest/sysinfo/struct.NetworkData.html#method.received.
-            download_rate: 0,
+            download_rate,
             download_rate_limit: self.config.download.rate_limit.as_u64(),
 
             // TODO: Get the network download rate, refer to
             // https://docs.rs/sysinfo/latest/sysinfo/struct.NetworkData.html#method.transmitted
-            upload_rate: 0,
+            upload_rate,
             upload_rate_limit: self.config.upload.rate_limit.as_u64(),
         };
 
