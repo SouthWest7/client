@@ -55,6 +55,8 @@ RUN if [ "$(uname -m)" = "ppc64le" ]; then \
 
 FROM public.ecr.aws/docker/library/golang:1.23.0-alpine3.20 AS pprof
 
+ENV GOPROXY=https://goproxy.cn,direct
+
 RUN go install github.com/google/pprof@latest
 
 FROM public.ecr.aws/debian/debian:bookworm-slim

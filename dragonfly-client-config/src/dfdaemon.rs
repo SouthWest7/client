@@ -24,6 +24,7 @@ use dragonfly_client_util::{
     tls::{generate_ca_cert_from_pem, generate_cert_from_pem},
 };
 use local_ip_address::{local_ip, local_ipv6};
+use pnet::datalink;
 use rcgen::Certificate;
 use regex::Regex;
 use rustls_pki_types::CertificateDer;
@@ -37,7 +38,7 @@ use tokio::fs;
 use tonic::transport::{
     Certificate as TonicCertificate, ClientTlsConfig, Identity, ServerTlsConfig,
 };
-use tracing::{error, instrument};
+use tracing::{error, info, instrument};
 use validator::Validate;
 
 /// NAME is the name of dfdaemon.
@@ -413,6 +414,9 @@ pub struct Host {
 
     /// ip is the advertise ip of the host.
     pub ip: Option<IpAddr>,
+
+    /// interface is the network interface name.
+    pub interface: Option<String>,
 }
 
 /// Host implements Default.
@@ -423,6 +427,7 @@ impl Default for Host {
             location: None,
             hostname: default_host_hostname(),
             ip: None,
+            interface: None,
         }
     }
 }
@@ -1373,6 +1378,9 @@ pub struct Security {
 pub struct Network {
     /// enable_ipv6 indicates whether enable ipv6.
     pub enable_ipv6: bool,
+
+    /// interface is the network interface name.
+    pub interface: Option<String>,
 }
 
 /// HealthServer is the health server configuration for dfdaemon.
@@ -1597,7 +1605,19 @@ impl Config {
             self.host.ip = if self.network.enable_ipv6 {
                 Some(local_ipv6().unwrap())
             } else {
-                Some(local_ip().unwrap())
+                if let Some(interface_name) = &self.host.interface {
+                    info!("Using interface: {}", interface_name);
+                    let interfaces = datalink::interfaces();
+                    let ip = interfaces
+                        .iter()
+                        .find(|iface| iface.name == *interface_name)
+                        .and_then(|iface| {
+                            iface.ips.iter().find(|ip| ip.is_ipv4()).map(|ip| ip.ip())
+                        });
+                    Some(ip.unwrap_or(local_ip().unwrap()))
+                } else {
+                    Some(local_ip().unwrap())
+                }
             }
         }
 

@@ -37,7 +37,7 @@ use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
-use tracing::{error, info, instrument, Instrument};
+use tracing::{debug, error, info, instrument, Instrument};
 use url::Url;
 
 use super::interceptor::InjectTracingInterceptor;
@@ -551,7 +551,7 @@ impl SchedulerClient {
                 .zip(available_schedulers_clone.iter())
                 .all(|(a, b)| a == b)
         {
-            info!(
+            debug!(
                 "available schedulers is not changed: {:?}",
                 data_available_schedulers_clone
                     .iter()

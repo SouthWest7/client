@@ -841,6 +841,7 @@ impl Task {
                                 announce_peer_request::Request::DownloadPeerBackToSourceStartedRequest(
                                     DownloadPeerBackToSourceStartedRequest {
                                         description: None,
+                                        content_length: content_length,
                                     },
                                 ),
                             ),

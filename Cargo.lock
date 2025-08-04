@@ -940,8 +940,7 @@ dependencies = [
 [[package]]
 name = "dragonfly-api"
 version = "2.1.40"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36c49e3e1d805c3efa1834af4c0d549589e2e83acb0a1065b261619de23990aa"
+source = "git+https://github.com/SouthWest7/api?tag=v2.6.0#edd974e71056491cd728a98fd12346f8c36cd29f"
 dependencies = [
  "prost 0.13.5",
  "prost-types 0.14.1",
@@ -1070,6 +1069,7 @@ dependencies = [
  "humantime",
  "humantime-serde",
  "local-ip-address",
+ "pnet",
  "rcgen",
  "regex",
  "reqwest",
