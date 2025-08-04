@@ -238,9 +238,9 @@ impl SchedulerAnnouncer {
         let mut upload_rate = 0;
         if let Some(network_data) = networks.get(&interface.name) {
             download_rate =
-                (network_data.received() as f64 / interval.as_secs_f64().round()) as u64;
+                (network_data.received() as f64 / interval.as_secs_f64()).round() as u64;
             upload_rate =
-                (network_data.transmitted() as f64 / interval.as_secs_f64().round()) as u64;
+                (network_data.transmitted() as f64 / interval.as_secs_f64()).round() as u64;
         }
 
         // Get the network information.
