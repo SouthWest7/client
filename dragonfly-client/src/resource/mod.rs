@@ -15,6 +15,7 @@
  */
 
 pub mod parent_selector;
+pub mod piece_selector;
 pub mod persistent_cache_task;
 pub mod piece;
 pub mod piece_collector;
