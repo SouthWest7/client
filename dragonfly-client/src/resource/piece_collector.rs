@@ -28,8 +28,6 @@ use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, info, instrument, Instrument};
 
-const DEFAULT_WAIT_FOR_PIECE_FROM_DIFFERENT_PARENTS: Duration = Duration::from_millis(5);
-
 /// CollectedParent is the parent peer collected from the parent.
 #[derive(Clone, Debug)]
 pub struct CollectedParent {
@@ -49,7 +47,7 @@ pub struct CollectedParent {
     // QUIC port is used to indicate the quic server port of the peer.
     pub download_quic_port: Option<i32>,
 
-    // Need Back To Source is used to indicate the peer which provides new pieces
+    // Need back to Source is used to indicate the peer which provides new pieces
     pub need_back_to_source: bool,
 }
 
@@ -145,25 +143,20 @@ impl PieceCollector {
         collected_piece_rx
     }
 
-    /// collect_from_parents collects pieces from multiple parents with load balancing strategy.
+    /// collect_from_parents collects pieces from multiple parents with immediate sending strategy.
     ///
-    /// The collection process works in two phases:
-    /// 1. **Synchronization Phase**: Waits for a configured duration (DEFAULT_WAIT_FOR_PIECE_FROM_DIFFERENT_PARENTS)
-    ///    to collect the same piece information from different parents. This allows the collector
-    ///    to gather multiple sources for each piece.
+    /// Each piece is sent immediately upon collection from any parent, without waiting for
+    /// additional parents or removing the piece from tracking. This ensures:
+    /// - Minimal latency between piece discovery and download initiation
+    /// - Immediate utilization of available pieces
+    /// - Simplified collection logic without synchronization overhead
     ///
-    /// 2. **Selection Phase**: After the wait period, randomly selects one parent from the available
-    ///    candidates for each piece and forwards it to the piece downloader.
-    ///
-    /// **Load Balancing Strategy**:
-    /// The random parent selection is designed to distribute download load across multiple parents
-    /// during concurrent piece downloads. This approach ensures:
-    /// - Optimal utilization of bandwidth from multiple parent nodes
-    /// - Prevention of overwhelming any single parent with too many requests
-    /// - Better overall download performance through parallel connections
-    ///
-    /// This strategy is particularly effective when downloading multiple pieces simultaneously,
-    /// as it naturally spreads the workload across the available parent pool.
+    /// **Immediate Sending Strategy**:
+    /// Each parent connection operates independently, sending pieces as soon as they are
+    /// discovered. This approach provides:
+    /// - Fast response to piece availability
+    /// - Reduced complexity in collection coordination
+    /// - Immediate download start capability
     #[allow(clippy::too_many_arguments)]
     #[instrument(skip_all)]
     async fn collect_from_parents(
@@ -186,7 +179,6 @@ impl PieceCollector {
                 task_id: String,
                 mut parent: CollectedParent,
                 interested_pieces: Vec<metadata::Piece>,
-                collected_pieces: Arc<DashMap<u32, Vec<CollectedParent>>>,
                 collected_piece_tx: Sender<CollectedPiece>,
                 collected_piece_timeout: Duration,
             ) -> Result<CollectedParent> {
@@ -235,34 +227,22 @@ impl PieceCollector {
                 })? {
                     let message = message?;
 
-                    if let Some(mut parents) = collected_pieces.get_mut(&message.number) {
-                        parent.download_ip = Some(message.ip);
-                        parent.download_tcp_port = message.tcp_port;
-                        parent.download_quic_port = message.quic_port;
-                        parents.push(parent.clone());
-                    } else {
-                        continue;
-                    }
-
-                    // Wait for collecting the piece from different parents when the first
-                    // piece is collected.
-                    tokio::time::sleep(DEFAULT_WAIT_FOR_PIECE_FROM_DIFFERENT_PARENTS).await;
-                    let parents = match collected_pieces.remove(&message.number) {
-                        Some((_, parents)) => parents,
-                        None => continue,
-                    };
                     debug!(
-                        "receive piece {}-{} metadata from parents {:?}",
+                        "receive piece {}-{} metadata from parent {:?}",
                         task_id,
                         message.number,
-                        parents.iter().map(|p| &p.id).collect::<Vec<&String>>()
+                        parent.id
                     );
+
+                    parent.download_ip = Some(message.ip);
+                    parent.download_tcp_port = message.tcp_port;
+                    parent.download_quic_port = message.quic_port;
 
                     collected_piece_tx
                         .send(CollectedPiece {
                             number: message.number,
                             length: message.length,
-                            parents,
+                            parents: vec![parent.clone()],
                         })
                         .await
                         .inspect_err(|err| {
@@ -280,7 +260,6 @@ impl PieceCollector {
                     task_id.to_string(),
                     parent.clone(),
                     interested_pieces.clone(),
-                    collected_pieces.clone(),
                     collected_piece_tx.clone(),
                     collected_piece_timeout,
                 )
@@ -389,25 +368,20 @@ impl PersistentCachePieceCollector {
         collected_piece_rx
     }
 
-    /// collect_from_parents collects pieces from multiple parents with load balancing strategy.
+    /// collect_from_parents collects pieces from multiple parents with immediate sending strategy.
     ///
-    /// The collection process works in two phases:
-    /// 1. **Synchronization Phase**: Waits for a configured duration (DEFAULT_WAIT_FOR_PIECE_FROM_DIFFERENT_PARENTS)
-    ///    to collect the same piece information from different parents. This allows the collector
-    ///    to gather multiple sources for each piece.
+    /// Each piece is sent immediately upon collection from any parent, without waiting for
+    /// additional parents or removing the piece from tracking. This ensures:
+    /// - Minimal latency between piece discovery and download initiation
+    /// - Immediate utilization of available pieces
+    /// - Simplified collection logic without synchronization overhead
     ///
-    /// 2. **Selection Phase**: After the wait period, randomly selects one parent from the available
-    ///    candidates for each piece and forwards it to the piece downloader.
-    ///
-    /// **Load Balancing Strategy**:
-    /// The random parent selection is designed to distribute download load across multiple parents
-    /// during concurrent piece downloads. This approach ensures:
-    /// - Optimal utilization of bandwidth from multiple parent nodes
-    /// - Prevention of overwhelming any single parent with too many requests
-    /// - Better overall download performance through parallel connections
-    ///
-    /// This strategy is particularly effective when downloading multiple pieces simultaneously,
-    /// as it naturally spreads the workload across the available parent pool.
+    /// **Immediate Sending Strategy**:
+    /// Each parent connection operates independently, sending pieces as soon as they are
+    /// discovered. This approach provides:
+    /// - Fast response to piece availability
+    /// - Reduced complexity in collection coordination
+    /// - Immediate download start capability
     #[allow(clippy::too_many_arguments)]
     #[instrument(skip_all)]
     async fn collect_from_parents(
@@ -493,26 +467,19 @@ impl PersistentCachePieceCollector {
                         continue;
                     }
 
-                    // Wait for collecting the piece from different parents when the first
-                    // piece is collected.
-                    tokio::time::sleep(DEFAULT_WAIT_FOR_PIECE_FROM_DIFFERENT_PARENTS).await;
-                    let parents = match collected_pieces.remove(&message.number) {
-                        Some((_, parents)) => parents,
-                        None => continue,
-                    };
-
                     debug!(
-                        "receive piece {}-{} metadata from parents {:?}",
+                        "receive piece {}-{} metadata from parent {:?}",
                         task_id,
                         message.number,
-                        parents.iter().map(|p| &p.id).collect::<Vec<&String>>()
+                        parent.id
                     );
 
+                    // 立即发送，不等待，不移除
                     collected_piece_tx
                         .send(CollectedPiece {
                             number: message.number,
                             length: message.length,
-                            parents,
+                            parents: vec![parent.clone()],
                         })
                         .await
                         .inspect_err(|err| {
