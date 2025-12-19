@@ -17,6 +17,7 @@
 use crate::grpc::{scheduler::SchedulerClient, REQUEST_TIMEOUT};
 use crate::resource::piece_selector::PieceSelector;
 use crate::resource::parent_selector::ParentSelector;
+use chrono::Utc;
 use dragonfly_api::common::v2::{
     Download, Hdfs, ObjectStorage, Peer, Piece, SizeScope, Task as CommonTask, TaskType,
     TrafficType,
@@ -56,7 +57,7 @@ use reqwest::header::HeaderMap;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, Ordering},
     Arc,
 };
 use std::time::Instant;
@@ -989,28 +990,6 @@ impl Task {
     ) -> ClientResult<Vec<metadata::Piece>> {
         // Get the id of the task.
         let task_id = task.id.as_str();
-        // If scheduler only gives one parent (likely seed), add a small random wait to stagger requests.
-        info!("parents for task {}: {:?}", task_id, parents.iter().map(|p| p.id.clone()).collect::<Vec<String>>());
-        if parents.len() == 1 {
-            // let backoff = Duration::from_millis(200 + fastrand::u64(0..301));
-            info!("single parent detected",);
-            // tokio::time::sleep(backoff).await;
-
-            let has_available_peer = self
-                .parent_selector
-                .apply_single_parent_backoff(&parents, task_id)
-                .await
-                .unwrap_or(false);
-
-            if !has_available_peer {
-                info!(
-                    "single parent has no available peer for task {}, triggering reschedule",
-                    task_id
-                );
-                return Ok(Vec::new());
-            }
-        }
-
         // Register the parents for syncing host info.
         self.parent_selector
             .register(&parents)
@@ -1032,13 +1011,14 @@ impl Task {
             task_id,
             interested_pieces.clone(),
             parents
-                .into_iter()
+                .iter()
                 .map(|peer| piece_collector::CollectedParent {
-                    id: peer.id,
-                    host: peer.host,
+                    id: peer.id.clone(),
+                    host: peer.host.clone(),
                     download_ip: None,
                     download_tcp_port: None,
                     download_quic_port: None,
+                    need_back_to_source: peer.need_back_to_source,
                 })
                 .collect(),
         )
@@ -1058,9 +1038,6 @@ impl Task {
         let semaphore = Arc::new(Semaphore::new(
             self.config.download.concurrent_piece_count as usize,
         ));
-
-        let cumulative_piece_count = Arc::new(AtomicUsize::new(0));
-
         // Initialize piece selector
         let piece_selector = Arc::new(PieceSelector::new());
 
@@ -1083,10 +1060,10 @@ impl Task {
             task_id: String,
             host_id: String,
             peer_id: String,
-            interested_piece: Option<metadata::Piece>,
             number: u32,
             length: u64,
-            parents: Vec<piece_collector::CollectedParent>,
+            old_parents: Vec<piece_collector::CollectedParent>,
+            all_parents: Vec<piece_collector::CollectedParent>,
             piece_manager: Arc<piece::Piece>,
             download_progress_tx: Sender<Result<DownloadTaskResponse, Status>>,
             in_stream_tx: Sender<AnnouncePeerRequest>,
@@ -1096,42 +1073,52 @@ impl Task {
             need_piece_content: bool,
             protocol: String,
             parent_selector: Arc<ParentSelector>,
-            cumulative_piece_count: Arc<AtomicUsize>,
         ) -> ClientResult<metadata::Piece> {
             let piece_id = piece_manager.id(task_id.as_str(), number);
-            let mut parents = parents;
-            if cumulative_piece_count.fetch_add(1, Ordering::SeqCst) + 1
-                > config.download.concurrent_piece_count as usize
-            {
-                info!("refreshing parents for piece {}", piece_id);
-                if let Some(interested_piece) = interested_piece {
-                    let piece_collector = piece_collector::PieceCollector::new(
-                        config.clone(),
-                        host_id.as_str(),
-                        task_id.as_str(),
-                        vec![interested_piece],
-                        parents.clone(),
-                    )
-                    .await;
-                    let mut piece_collector_rx = piece_collector.run().await;
+            let old_parents = old_parents;
+            let interested_piece = metadata::Piece {
+                number: number as u32,
+                offset: 0,
+                length: length,
+                digest: "".to_string(),
+                parent_id: None,
+                uploading_count: 0,
+                uploaded_count: 0,
+                updated_at: Utc::now().naive_utc(),
+                created_at: Utc::now().naive_utc(),
+                finished_at: None,
+            };
+            info!("refreshing parents for piece {}", piece_id);
+            let piece_collector = piece_collector::PieceCollector::new(
+                config.clone(),
+                host_id.as_str(),
+                task_id.as_str(),
+                vec![interested_piece],
+                all_parents.clone(),
+            )
+            .await;
+            let mut piece_collector_rx = piece_collector.run().await;
 
-                    if let Some(updated_parents) = piece_collector_rx.recv().await {
-                        if !updated_parents.parents.is_empty() {
-                            parents = updated_parents.parents;
-                            info!(
-                                "refreshed parents for piece {}: {:?}",
-                                piece_id,
-                                parents
-                                    .iter()
-                                    .map(|p| p.id.clone())
-                                    .collect::<Vec<String>>()
-                            );
-                        }
-                    }
+            let selected_parents = if let Some(updated_parents) = piece_collector_rx.recv().await {
+                if !updated_parents.parents.is_empty() {
+                    let new_parents = updated_parents.parents;
+                    info!(
+                        "refreshed parents for piece {}: {:?}",
+                        piece_id,
+                        new_parents
+                            .iter()
+                            .map(|p| p.id.clone())
+                            .collect::<Vec<String>>()
+                    );
+                    new_parents
+                } else {
+                    old_parents
                 }
-            }
+            } else {
+                old_parents
+            };
 
-            let parent = parent_selector.select(parents);
+            let parent = parent_selector.select(selected_parents);
             let inflight_parent_id = parent_selector.increment_inflight_piece(&parent);
             let _inflight_guard = inflight_parent_id.as_ref().map(|parent_host_id| {
                 scopeguard::guard(parent_host_id.clone(), |parent_host_id| {
@@ -1304,8 +1291,17 @@ impl Task {
             let finished_pieces = finished_pieces.clone();
             let protocol = self.config.download.protocol.clone();
             let parent_selector = self.parent_selector.clone();
-            let interested_piece = interested_pieces.get(1).cloned();
-            let cumulative_piece_count = cumulative_piece_count.clone();
+            let parents_for_spawn = parents
+                .iter()
+                .map(|peer| piece_collector::CollectedParent {
+                    id: peer.id.clone(),
+                    host: peer.host.clone(),
+                    download_ip: None,
+                    download_tcp_port: None,
+                    download_quic_port: None,
+                    need_back_to_source: peer.need_back_to_source,
+                })
+                .collect::<Vec<_>>();
 
             join_set.spawn(
                 async move {
@@ -1315,10 +1311,10 @@ impl Task {
                         task_id,
                         host_id,
                         peer_id,
-                        interested_piece,
                         collect_piece.number,
                         collect_piece.length,
                         collect_piece.parents,
+                        parents_for_spawn,
                         piece_manager,
                         download_progress_tx,
                         in_stream_tx,
@@ -1328,7 +1324,6 @@ impl Task {
                         need_piece_content,
                         protocol,
                         parent_selector,
-                        cumulative_piece_count,
                     )
                     .await
                 }
@@ -1394,7 +1389,6 @@ impl Task {
                 }
                 Err(err) => {
                     error!("download from parent error: {:?}", err);
-
                     // If the unknown error occurred, continue to download the next piece and
                     // ignore the error.
                     continue;

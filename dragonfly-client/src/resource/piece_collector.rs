@@ -48,6 +48,9 @@ pub struct CollectedParent {
 
     // QUIC port is used to indicate the quic server port of the peer.
     pub download_quic_port: Option<i32>,
+
+    // Need Back To Source is used to indicate the peer which provides new pieces
+    pub need_back_to_source: bool,
 }
 
 /// CollectedPiece is the piece collected from a peer.
@@ -187,7 +190,7 @@ impl PieceCollector {
                 collected_piece_tx: Sender<CollectedPiece>,
                 collected_piece_timeout: Duration,
             ) -> Result<CollectedParent> {
-                debug!("sync pieces from parent {}", parent.id);
+                info!("sync pieces from parent {}", parent.id);
 
                 // If candidate_parent.host is None, skip it.
                 let host = parent.host.clone().ok_or_else(|| {
@@ -248,7 +251,6 @@ impl PieceCollector {
                         Some((_, parents)) => parents,
                         None => continue,
                     };
-
                     debug!(
                         "receive piece {}-{} metadata from parents {:?}",
                         task_id,

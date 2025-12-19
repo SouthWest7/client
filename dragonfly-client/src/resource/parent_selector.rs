@@ -177,7 +177,7 @@ impl ParentSelector {
 
                     return 0;
                 };
-                self.calculate_weight(parent_host)
+                self.calculate_weight(parent_host, parent.need_back_to_source)
             })
             .collect();
 
@@ -409,7 +409,7 @@ impl ParentSelector {
     }
 
     /// Calculates the weight of a host based on its idle bandwidth and inflight pieces.
-    fn calculate_weight(&self, host: &Host) -> u64 {
+    fn calculate_weight(&self, host: &Host, is_seed: bool) -> u64 {
         let (tx_bw, max_bw) = self
             .networks
             .get(&host.id)
@@ -417,8 +417,13 @@ impl ParentSelector {
             .unwrap_or((1, 1));
 
         // idle bandwidth, at least 10% of max bandwidth.
-        let idle_bw = max_bw.saturating_sub(tx_bw).max(max_bw / 10) as f64;
+        let min_bw = max_bw / 10;
+        let idle_bw = max_bw.saturating_sub(tx_bw).max(min_bw) as f64;
 
+        // do not select seed if it's load is high
+        if is_seed && idle_bw <= (min_bw as f64){
+            return 0;
+        }
         // inflight backpressure（γ=3.0）
         let inflight = self
             .connections

@@ -1151,6 +1151,7 @@ impl PersistentCacheTask {
                     download_ip: None,
                     download_tcp_port: None,
                     download_quic_port: None,
+                    need_back_to_source: false,
                 })
                 .collect(),
         )
